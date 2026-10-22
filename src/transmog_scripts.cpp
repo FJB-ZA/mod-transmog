@@ -67,6 +67,8 @@ bool ValidForTransmog (Player* player, Item* target, Item* source, bool hasSearc
     return true;
 }
 
+void TransmogWardrobe_Open(Player* player, Creature* weaver);  // transmog_wardrobe.cpp
+
 bool CmpTmog (Item* i1, Item* i2)
 {
     const ItemTemplate* i1t = i1->GetTemplate();
@@ -223,6 +225,7 @@ public:
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|t" + Tstr(session, LANG_TRANSMOG_REMOVETRANSMOG), EQUIPMENT_SLOT_END + 2, 0, Tstr(session, LANG_TRANSMOG_REMOVETRANSMOG_ASK), 0, false);
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + Tstr(session, LANG_TRANSMOG_UPDATEMENU), EQUIPMENT_SLOT_END + 1, 0);
         SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
+        TransmogWardrobe_Open(player, creature);
         return true;
     }
 
