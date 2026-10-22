@@ -278,6 +278,7 @@ public:
     bool HiddenTransmogIsFree;
     
     bool TrackUnusableItems;
+    uint32 BotMinQuality;
     bool RetroActiveAppearances;
     bool ResetRetroActiveAppearances;
     bool ShowSetDisclaimer;
@@ -348,6 +349,8 @@ public:
     bool GetAllowHiddenTransmog() const;
     bool GetHiddenTransmogIsFree() const;
     bool GetTrackUnusableItems() const;
+    // Bot (headless) sessions only collect and wear appearances of at least this quality.
+    [[nodiscard]] bool AllowsForSession(WorldSession const* session, ItemTemplate const* itemTemplate) const;
     bool EnableRetroActiveAppearances() const;
     bool EnableResetRetroActiveAppearances() const;
     [[nodiscard]] bool IsEnabled() const;

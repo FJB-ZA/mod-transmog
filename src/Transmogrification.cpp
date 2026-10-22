@@ -2,6 +2,7 @@
 #include "ItemTemplate.h"
 #include "SpellMgr.h"
 #include "Tokenize.h"
+#include "TransmogBotPolicy.h"
 #include "Transmogrification.h"
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
@@ -534,8 +535,10 @@ void Transmogrification::AddToDatabase(Player* player, ItemTemplate const* itemT
         return;
     if (itemTemplate->Class != ITEM_CLASS_ARMOR && itemTemplate->Class != ITEM_CLASS_WEAPON)
         return;
-    uint32 itemId = itemTemplate->ItemId;
     WorldSession* session = player->GetSession();
+    if (!AllowsForSession(session, itemTemplate))
+        return;
+    uint32 itemId = itemTemplate->ItemId;
     uint32 accountId = session->GetAccountId();
     std::string itemName = itemTemplate->Name1;
 
@@ -546,7 +549,7 @@ void Transmogrification::AddToDatabase(Player* player, ItemTemplate const* itemT
     std::stringstream tempStream;
     tempStream << std::hex << ItemQualityColors[itemTemplate->Quality];
     std::string itemQuality = tempStream.str();
-    bool showChatMessage = !(player->GetPlayerSetting("mod-transmog", SETTING_HIDE_TRANSMOG).value) && !CanNeverTransmog(itemTemplate);
+    bool showChatMessage = TransmogBotPolicy::Announces(session->IsHeadless()) && !(player->GetPlayerSetting("mod-transmog", SETTING_HIDE_TRANSMOG).value) && !CanNeverTransmog(itemTemplate);
     if (AddCollectedAppearance(accountId, itemId))
     {
         if (showChatMessage)
@@ -634,7 +637,8 @@ TransmogStrings Transmogrification::Transmogrify(Player* player, Item* itemTrans
     }
     else
     {
-        if (!CanTransmogrifyItemWithItem(player, itemTransmogrified->GetTemplate(), itemTransmogrifier->GetTemplate()))
+        if (!CanTransmogrifyItemWithItem(player, itemTransmogrified->GetTemplate(), itemTransmogrifier->GetTemplate()) ||
+            !AllowsForSession(player->GetSession(), itemTransmogrifier->GetTemplate()))
         {
             //TC_LOG_DEBUG(LOG_FILTER_NETWORKIO, "WORLD: HandleTransmogrifyItems - Player (GUID: {}, name: {}) failed CanTransmogrifyItemWithItem ({} with {}).", player->GetGUIDLow(), player->GetName(), itemTransmogrified->GetEntry(), itemTransmogrifier->GetEntry());
             return LANG_TRANSMOG_INVALID_ITEMS;
@@ -1233,6 +1237,7 @@ void Transmogrification::LoadConfig(bool reload)
     AllowHiddenTransmog = sConfigMgr->GetOption<bool>("Transmogrification.AllowHiddenTransmog", true);
     HiddenTransmogIsFree = sConfigMgr->GetOption<bool>("Transmogrification.HiddenTransmogIsFree", true);
     TrackUnusableItems = sConfigMgr->GetOption<bool>("Transmogrification.TrackUnusableItems", true);
+    BotMinQuality = sConfigMgr->GetOption<uint32>("Transmogrification.BotMinQuality", 0);
     RetroActiveAppearances = sConfigMgr->GetOption<bool>("Transmogrification.RetroActiveAppearances", true);
     ResetRetroActiveAppearances = sConfigMgr->GetOption<bool>("Transmogrification.ResetRetroActiveAppearancesFlag", false);
 
@@ -1430,6 +1435,11 @@ bool Transmogrification::GetAllowTradeable() const
 bool Transmogrification::GetTrackUnusableItems() const
 {
     return TrackUnusableItems;
+}
+
+bool Transmogrification::AllowsForSession(WorldSession const* session, ItemTemplate const* itemTemplate) const
+{
+    return TransmogBotPolicy::Allows(session && session->IsHeadless(), itemTemplate->Quality, BotMinQuality);
 }
 
 bool Transmogrification::EnableRetroActiveAppearances() const

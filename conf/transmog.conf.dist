@@ -47,6 +47,12 @@
 #                     This allows these appearances to be used later if the configuration is changed.
 #        Default:     1
 #
+#    Transmogrification.BotMinQuality
+#        Description: Lowest item quality that bot (headless) sessions collect and wear.
+#                     0 = no limit, 3 = rare (blue) and better, 4 = epic and better.
+#                     Bots also get no "added to your collection" chat messages.
+#        Default:     0
+#
 #    Transmogrification.RetroActiveAppearances
 #        Description: Enables/Disables checking all completed quests for uncollected appearances.
 #                     Occurs only once per player.
@@ -91,6 +97,7 @@ Transmogrification.UseVendorInterface = 0
 Transmogrification.AllowHiddenTransmog = 1
 Transmogrification.HiddenTransmogIsFree = 1
 Transmogrification.TrackUnusableItems = 1
+Transmogrification.BotMinQuality = 0
 Transmogrification.RetroActiveAppearances = 1
 Transmogrification.ResetRetroActiveAppearancesFlag = 0
 

@@ -58,6 +58,8 @@ bool ValidForTransmog (Player* player, Item* target, Item* source, bool hasSearc
 
     if (!sT->CanTransmogrifyItemWithItem(player, targetTemplate, sourceTemplate))
         return false;
+    if (!sT->AllowsForSession(player->GetSession(), sourceTemplate))
+        return false;
     if (sT->GetFakeEntry(target->GetGUID()) == source->GetEntry())
         return false;
     if (hasSearch && sourceTemplate->Name1.find(searchTerm) == std::string::npos)
