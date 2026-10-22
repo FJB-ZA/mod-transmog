@@ -12,6 +12,7 @@
 #include "ItemTemplate.h"
 #include "QuestDef.h"
 #include "ItemTemplate.h"
+#include <memory>
 #include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>

@@ -568,8 +568,8 @@ TransmogStrings Transmogrification::Transmogrify(Player* player, uint32 itemEntr
         return LANG_TRANSMOG_MISSING_SRC_ITEM;
     }
 
-    Item* itemTransmogrifier = Item::CreateItem(itemEntry, 1, 0);
-    return Transmogrify(player, itemTransmogrifier, slot, no_cost, false);
+    std::unique_ptr<Item> itemTransmogrifier(Item::CreateItem(itemEntry, 1, 0));
+    return Transmogrify(player, itemTransmogrifier.get(), slot, no_cost, false);
 }
 
 TransmogStrings Transmogrification::Transmogrify(Player* player, ObjectGuid itemGUID, uint8 slot, /*uint32 newEntry, */bool no_cost) {

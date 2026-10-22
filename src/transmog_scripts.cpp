@@ -74,7 +74,8 @@ bool CmpTmog (Item* i1, Item* i2)
     return std::tie(q1, i1t->Name1) < std::tie(q2, i2t->Name1);
 }
 
-std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSearch, std::string searchTerm)
+// Collection items are created for the menu only; `temporaries` owns them, so keep it alive while using the result.
+std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSearch, std::string searchTerm, std::vector<std::unique_ptr<Item>>& temporaries)
 {
     std::vector<Item*> allowedItems;
     if (!target) return allowedItems;
@@ -86,7 +87,7 @@ std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSear
         {
             if (!sObjectMgr->GetItemTemplate(itemId))
                 continue;
-            Item* srcItem = Item::CreateItem(itemId, 1, 0);
+            Item* srcItem = temporaries.emplace_back(Item::CreateItem(itemId, 1, 0)).get();
             if (ValidForTransmog(player, target, srcItem, hasSearch, searchTerm))
                 allowedItems.push_back(srcItem);
         }
@@ -515,7 +516,8 @@ public:
             std::unordered_map<uint32, std::string>::iterator searchStringIterator = sT->searchStringByPlayer.find(player->GetGUID().GetCounter());
             hasSearchString = !(searchStringIterator == sT->searchStringByPlayer.end());
             std::string searchDisplayValue(hasSearchString ? searchStringIterator->second : Tstr(session, LANG_TRANSMOG_SEARCH));
-            std::vector<Item*> allowedItems = GetValidTransmogs(player, oldItem, hasSearchString, searchDisplayValue);
+            std::vector<std::unique_ptr<Item>> temporaries;
+            std::vector<Item*> allowedItems = GetValidTransmogs(player, oldItem, hasSearchString, searchDisplayValue, temporaries);
 
             if (allowedItems.size() > 0)
             {
@@ -651,7 +653,8 @@ public:
         }
         ItemTemplate const* targetTemplate = targetItem->GetTemplate();
 
-        std::vector<Item*> itemList = GetValidTransmogs(player, targetItem, false, "");
+        std::vector<std::unique_ptr<Item>> temporaries;
+        std::vector<Item*> itemList = GetValidTransmogs(player, targetItem, false, "", temporaries);
         std::vector<ItemTemplate const*> spoofedItems = GetSpoofedVendorItems(targetItem);
 
         uint32 itemCount = itemList.size();
