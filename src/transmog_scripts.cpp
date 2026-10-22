@@ -58,6 +58,8 @@ bool ValidForTransmog (Player* player, Item* target, Item* source, bool hasSearc
 
     if (!sT->CanTransmogrifyItemWithItem(player, targetTemplate, sourceTemplate))
         return false;
+    if (!sT->AllowsForSession(player->GetSession(), sourceTemplate))
+        return false;
     if (sT->GetFakeEntry(target->GetGUID()) == source->GetEntry())
         return false;
     if (hasSearch && sourceTemplate->Name1.find(searchTerm) == std::string::npos)
@@ -74,7 +76,8 @@ bool CmpTmog (Item* i1, Item* i2)
     return std::tie(q1, i1t->Name1) < std::tie(q2, i2t->Name1);
 }
 
-std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSearch, std::string searchTerm)
+// Collection items are created for the menu only; `temporaries` owns them, so keep it alive while using the result.
+std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSearch, std::string searchTerm, std::vector<std::unique_ptr<Item>>& temporaries)
 {
     std::vector<Item*> allowedItems;
     if (!target) return allowedItems;
@@ -82,14 +85,11 @@ std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSear
     if (sT->GetUseCollectionSystem())
     {
         uint32 accountId = player->GetSession()->GetAccountId();
-        if (sT->collectionCache.find(accountId) == sT->collectionCache.end())
-            return allowedItems;
-
-        for (uint32 itemId : sT->collectionCache[accountId])
+        for (uint32 itemId : sT->GetCollectedAppearances(accountId))
         {
             if (!sObjectMgr->GetItemTemplate(itemId))
                 continue;
-            Item* srcItem = Item::CreateItem(itemId, 1, 0);
+            Item* srcItem = temporaries.emplace_back(Item::CreateItem(itemId, 1, 0)).get();
             if (ValidForTransmog(player, target, srcItem, hasSearch, searchTerm))
                 allowedItems.push_back(srcItem);
         }
@@ -125,7 +125,7 @@ std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSear
 
 void PerformTransmogrification (Player* player, uint32 itemEntry, uint32 cost)
 {
-    uint8 slot = sT->selectionCache[player->GetGUID()];
+    uint8 slot = sT->GetSelectedSlot(player->GetGUID());
     WorldSession* session = player->GetSession();
     if (!player->HasEnoughMoney(cost))
     {
@@ -153,7 +153,7 @@ void PerformTransmogrification (Player* player, uint32 itemEntry, uint32 cost)
 
 void RemoveTransmogrification (Player* player)
 {
-    uint8 slot = sT->selectionCache[player->GetGUID()];
+    uint8 slot = sT->GetSelectedSlot(player->GetGUID());
     WorldSession* session = player->GetSession();
     if (Item* newItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
     {
@@ -240,7 +240,7 @@ public:
         {
             case EQUIPMENT_SLOT_END: // Show items you can use
             {
-                sT->selectionCache[player->GetGUID()] = action;
+                sT->SetSelectedSlot(player->GetGUID(), action);
 
                 bool useVendorInterface = player->GetPlayerSetting("mod-transmog", SETTING_VENDOR_INTERFACE).IsEnabled();
 
@@ -518,7 +518,8 @@ public:
             std::unordered_map<uint32, std::string>::iterator searchStringIterator = sT->searchStringByPlayer.find(player->GetGUID().GetCounter());
             hasSearchString = !(searchStringIterator == sT->searchStringByPlayer.end());
             std::string searchDisplayValue(hasSearchString ? searchStringIterator->second : Tstr(session, LANG_TRANSMOG_SEARCH));
-            std::vector<Item*> allowedItems = GetValidTransmogs(player, oldItem, hasSearchString, searchDisplayValue);
+            std::vector<std::unique_ptr<Item>> temporaries;
+            std::vector<Item*> allowedItems = GetValidTransmogs(player, oldItem, hasSearchString, searchDisplayValue, temporaries);
 
             if (allowedItems.size() > 0)
             {
@@ -654,7 +655,8 @@ public:
         }
         ItemTemplate const* targetTemplate = targetItem->GetTemplate();
 
-        std::vector<Item*> itemList = GetValidTransmogs(player, targetItem, false, "");
+        std::vector<std::unique_ptr<Item>> temporaries;
+        std::vector<Item*> itemList = GetValidTransmogs(player, targetItem, false, "", temporaries);
         std::vector<ItemTemplate const*> spoofedItems = GetSpoofedVendorItems(targetItem);
 
         uint32 itemCount = itemList.size();
@@ -870,7 +872,7 @@ public:
             CheckRetroActiveQuestAppearances(player);
 
         ObjectGuid playerGUID = player->GetGUID();
-        sT->entryMap.erase(playerGUID);
+        std::vector<std::pair<ObjectGuid, uint32>> fakes;
         QueryResult result = CharacterDatabase.Query("SELECT GUID, FakeEntry FROM custom_transmogrification WHERE Owner = {}", player->GetGUID().GetCounter());
         if (result)
         {
@@ -879,12 +881,12 @@ public:
                 ObjectGuid itemGUID = ObjectGuid::Create<HighGuid::Item>((*result)[0].Get<uint32>());
                 uint32 fakeEntry = (*result)[1].Get<uint32>();
                 if (fakeEntry == HIDDEN_ITEM_ID || sObjectMgr->GetItemTemplate(fakeEntry))
-                {
-                    sT->dataMap[itemGUID] = playerGUID;
-                    sT->entryMap[playerGUID][itemGUID] = fakeEntry;
-                }
+                    fakes.emplace_back(itemGUID, fakeEntry);
             } while (result->NextRow());
-
+        }
+        sT->LoadPlayerTransmogs(playerGUID, fakes);
+        if (result)
+        {
             for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
             {
                 if (Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
@@ -901,10 +903,7 @@ public:
     void OnPlayerLogout(Player* player) override
     {
         ObjectGuid pGUID = player->GetGUID();
-        for (Transmogrification::transmog2Data::const_iterator it = sT->entryMap[pGUID].begin(); it != sT->entryMap[pGUID].end(); ++it)
-            sT->dataMap.erase(it->first);
-        sT->entryMap.erase(pGUID);
-        sT->selectionCache.erase(pGUID);
+        sT->UnloadPlayerTransmogs(pGUID);
 
 #ifdef PRESETS
         if (sT->GetEnableSets())
@@ -921,7 +920,7 @@ public:
         if (!sT->IsTransmogVendor(vendor->GetEntry()))
             return;
 
-        uint8 slot = sT->selectionCache[player->GetGUID()];
+        uint8 slot = sT->GetSelectedSlot(player->GetGUID());
 
         if (itemEntry == CUSTOM_HIDE_ITEM_VENDOR_ID || itemEntry == FALLBACK_HIDE_ITEM_VENDOR_ID)
         {

@@ -2,6 +2,7 @@
 #include "ItemTemplate.h"
 #include "SpellMgr.h"
 #include "Tokenize.h"
+#include "TransmogBotPolicy.h"
 #include "Transmogrification.h"
 #include "WorldSession.h"
 #include "WorldSessionMgr.h"
@@ -426,6 +427,7 @@ uint32 Transmogrification::GetFakeEntry(ObjectGuid itemGUID) const
 {
     LOG_DEBUG("module", "Transmogrification::GetFakeEntry");
 
+    std::shared_lock lock(_cacheLock);
     transmogData::const_iterator itr = dataMap.find(itemGUID);
     if (itr == dataMap.end()) return 0;
     transmogMap::const_iterator itr2 = entryMap.find(itr->second);
@@ -458,23 +460,71 @@ void Transmogrification::DeleteFakeEntry(Player* player, uint8 /*slot*/, Item* i
 void Transmogrification::SetFakeEntry(Player* player, uint32 newEntry, uint8 /*slot*/, Item* itemTransmogrified)
 {
     ObjectGuid itemGUID = itemTransmogrified->GetGUID();
-    entryMap[player->GetGUID()][itemGUID] = newEntry;
-    dataMap[itemGUID] = player->GetGUID();
+    {
+        std::unique_lock lock(_cacheLock);
+        entryMap[player->GetGUID()][itemGUID] = newEntry;
+        dataMap[itemGUID] = player->GetGUID();
+    }
     CharacterDatabase.Execute("REPLACE INTO custom_transmogrification (GUID, FakeEntry, Owner) VALUES ({}, {}, {})", itemGUID.GetCounter(), newEntry, player->GetGUID().GetCounter());
     UpdateItem(player, itemTransmogrified);
 }
 
 bool Transmogrification::AddCollectedAppearance(uint32 accountId, uint32 itemId)
 {
-    if (!collectionCache.contains(accountId))
-    {
-        collectionCache.insert({ accountId, {itemId} });
-        return true;
-    }
+    std::unique_lock lock(_cacheLock);
+    return collectionCache[accountId].insert(itemId).second;
+}
 
-    auto res = collectionCache[accountId].insert(itemId);
-    bool inserted = res.second;
-    return inserted;
+bool Transmogrification::HasCollectedAppearance(uint32 accountId, uint32 itemId) const
+{
+    std::shared_lock lock(_cacheLock);
+    auto itr = collectionCache.find(accountId);
+    return itr != collectionCache.end() && itr->second.contains(itemId);
+}
+
+std::vector<uint32> Transmogrification::GetCollectedAppearances(uint32 accountId) const
+{
+    std::shared_lock lock(_cacheLock);
+    auto itr = collectionCache.find(accountId);
+    if (itr == collectionCache.end())
+        return {};
+    return { itr->second.begin(), itr->second.end() };
+}
+
+void Transmogrification::LoadPlayerTransmogs(ObjectGuid playerGuid, std::vector<std::pair<ObjectGuid, uint32>> const& fakes)
+{
+    std::unique_lock lock(_cacheLock);
+    entryMap.erase(playerGuid);
+    for (auto const& [itemGuid, fakeEntry] : fakes)
+    {
+        dataMap[itemGuid] = playerGuid;
+        entryMap[playerGuid][itemGuid] = fakeEntry;
+    }
+}
+
+void Transmogrification::UnloadPlayerTransmogs(ObjectGuid playerGuid)
+{
+    std::unique_lock lock(_cacheLock);
+    if (auto itr = entryMap.find(playerGuid); itr != entryMap.end())
+    {
+        for (auto const& [itemGuid, fakeEntry] : itr->second)
+            dataMap.erase(itemGuid);
+        entryMap.erase(itr);
+    }
+    selectionCache.erase(playerGuid);
+}
+
+void Transmogrification::SetSelectedSlot(ObjectGuid playerGuid, uint8 slot)
+{
+    std::unique_lock lock(_cacheLock);
+    selectionCache[playerGuid] = slot;
+}
+
+uint8 Transmogrification::GetSelectedSlot(ObjectGuid playerGuid) const
+{
+    std::shared_lock lock(_cacheLock);
+    auto itr = selectionCache.find(playerGuid);
+    return itr == selectionCache.end() ? 0 : itr->second;
 }
 
 void Transmogrification::AddToDatabase(Player* player, ItemTemplate const* itemTemplate)
@@ -485,8 +535,10 @@ void Transmogrification::AddToDatabase(Player* player, ItemTemplate const* itemT
         return;
     if (itemTemplate->Class != ITEM_CLASS_ARMOR && itemTemplate->Class != ITEM_CLASS_WEAPON)
         return;
-    uint32 itemId = itemTemplate->ItemId;
     WorldSession* session = player->GetSession();
+    if (!AllowsForSession(session, itemTemplate))
+        return;
+    uint32 itemId = itemTemplate->ItemId;
     uint32 accountId = session->GetAccountId();
     std::string itemName = itemTemplate->Name1;
 
@@ -497,7 +549,7 @@ void Transmogrification::AddToDatabase(Player* player, ItemTemplate const* itemT
     std::stringstream tempStream;
     tempStream << std::hex << ItemQualityColors[itemTemplate->Quality];
     std::string itemQuality = tempStream.str();
-    bool showChatMessage = !(player->GetPlayerSetting("mod-transmog", SETTING_HIDE_TRANSMOG).value) && !CanNeverTransmog(itemTemplate);
+    bool showChatMessage = TransmogBotPolicy::Announces(session->IsHeadless()) && !(player->GetPlayerSetting("mod-transmog", SETTING_HIDE_TRANSMOG).value) && !CanNeverTransmog(itemTemplate);
     if (AddCollectedAppearance(accountId, itemId))
     {
         if (showChatMessage)
@@ -519,8 +571,8 @@ TransmogStrings Transmogrification::Transmogrify(Player* player, uint32 itemEntr
         return LANG_TRANSMOG_MISSING_SRC_ITEM;
     }
 
-    Item* itemTransmogrifier = Item::CreateItem(itemEntry, 1, 0);
-    return Transmogrify(player, itemTransmogrifier, slot, no_cost, false);
+    std::unique_ptr<Item> itemTransmogrifier(Item::CreateItem(itemEntry, 1, 0));
+    return Transmogrify(player, itemTransmogrifier.get(), slot, no_cost, false);
 }
 
 TransmogStrings Transmogrification::Transmogrify(Player* player, ObjectGuid itemGUID, uint8 slot, /*uint32 newEntry, */bool no_cost) {
@@ -585,7 +637,8 @@ TransmogStrings Transmogrification::Transmogrify(Player* player, Item* itemTrans
     }
     else
     {
-        if (!CanTransmogrifyItemWithItem(player, itemTransmogrified->GetTemplate(), itemTransmogrifier->GetTemplate()))
+        if (!CanTransmogrifyItemWithItem(player, itemTransmogrified->GetTemplate(), itemTransmogrifier->GetTemplate()) ||
+            !AllowsForSession(player->GetSession(), itemTransmogrifier->GetTemplate()))
         {
             //TC_LOG_DEBUG(LOG_FILTER_NETWORKIO, "WORLD: HandleTransmogrifyItems - Player (GUID: {}, name: {}) failed CanTransmogrifyItemWithItem ({} with {}).", player->GetGUIDLow(), player->GetName(), itemTransmogrified->GetEntry(), itemTransmogrifier->GetEntry());
             return LANG_TRANSMOG_INVALID_ITEMS;
@@ -1184,6 +1237,7 @@ void Transmogrification::LoadConfig(bool reload)
     AllowHiddenTransmog = sConfigMgr->GetOption<bool>("Transmogrification.AllowHiddenTransmog", true);
     HiddenTransmogIsFree = sConfigMgr->GetOption<bool>("Transmogrification.HiddenTransmogIsFree", true);
     TrackUnusableItems = sConfigMgr->GetOption<bool>("Transmogrification.TrackUnusableItems", true);
+    BotMinQuality = sConfigMgr->GetOption<uint32>("Transmogrification.BotMinQuality", 0);
     RetroActiveAppearances = sConfigMgr->GetOption<bool>("Transmogrification.RetroActiveAppearances", true);
     ResetRetroActiveAppearances = sConfigMgr->GetOption<bool>("Transmogrification.ResetRetroActiveAppearancesFlag", false);
 
@@ -1235,11 +1289,14 @@ void Transmogrification::DeleteFakeFromDB(ObjectGuid::LowType itemLowGuid, Chara
 {
     ObjectGuid itemGUID = ObjectGuid::Create<HighGuid::Item>(itemLowGuid);
 
-    if (dataMap.find(itemGUID) != dataMap.end())
     {
-        if (entryMap.find(dataMap[itemGUID]) != entryMap.end())
-            entryMap[dataMap[itemGUID]].erase(itemGUID);
-        dataMap.erase(itemGUID);
+        std::unique_lock lock(_cacheLock);
+        if (auto itr = dataMap.find(itemGUID); itr != dataMap.end())
+        {
+            if (auto owner = entryMap.find(itr->second); owner != entryMap.end())
+                owner->second.erase(itemGUID);
+            dataMap.erase(itr);
+        }
     }
     if (trans)
         (*trans)->Append("DELETE FROM custom_transmogrification WHERE GUID = {}", itemLowGuid);
@@ -1378,6 +1435,11 @@ bool Transmogrification::GetAllowTradeable() const
 bool Transmogrification::GetTrackUnusableItems() const
 {
     return TrackUnusableItems;
+}
+
+bool Transmogrification::AllowsForSession(WorldSession const* session, ItemTemplate const* itemTemplate) const
+{
+    return TransmogBotPolicy::Allows(session && session->IsHeadless(), itemTemplate->Quality, BotMinQuality);
 }
 
 bool Transmogrification::EnableRetroActiveAppearances() const
