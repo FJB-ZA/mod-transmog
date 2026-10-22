@@ -67,7 +67,7 @@ public:
         uint32 accountId = player->GetSession()->GetAccountId();
         handler->PSendModuleSysMessage("mod-transmog", LANG_TRANSMOG_CMD_BEGIN_SYNC);
 
-        for (uint32 itemId : sTransmogrification->collectionCache[accountId])
+        for (uint32 itemId : sTransmogrification->GetCollectedAppearances(accountId))
             handler->PSendSysMessage("TRANSMOG_SYNC:{}", itemId);
 
         handler->PSendModuleSysMessage("mod-transmog", LANG_TRANSMOG_CMD_COMPLETE_SYNC);
@@ -333,8 +333,7 @@ public:
             return ClaimResult::Unsuitable;
 
         uint32 accountId = player->GetSession()->GetAccountId();
-        auto accIt = sTransmogrification->collectionCache.find(accountId);
-        if (accIt != sTransmogrification->collectionCache.end() && accIt->second.contains(itemTemplate->ItemId))
+        if (sTransmogrification->HasCollectedAppearance(accountId, itemTemplate->ItemId))
             return ClaimResult::AlreadyOwned;
 
         // Claim the physical item: bind it to the player and drop the refundable/BoP-tradeable flags
@@ -778,8 +777,7 @@ public:
         else
         {
             uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(playerGuid);
-            auto const& collCache = sTransmogrification->collectionCache[accountId];
-            bool inCollection = collCache.find(srcItem->ItemId) != collCache.end();
+            bool inCollection = sTransmogrification->HasCollectedAppearance(accountId, srcItem->ItemId);
             collOk = inCollection;
             collLine += inCollection
                 ? "[+] " + okMsg

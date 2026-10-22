@@ -426,6 +426,7 @@ uint32 Transmogrification::GetFakeEntry(ObjectGuid itemGUID) const
 {
     LOG_DEBUG("module", "Transmogrification::GetFakeEntry");
 
+    std::shared_lock lock(_cacheLock);
     transmogData::const_iterator itr = dataMap.find(itemGUID);
     if (itr == dataMap.end()) return 0;
     transmogMap::const_iterator itr2 = entryMap.find(itr->second);
@@ -458,23 +459,71 @@ void Transmogrification::DeleteFakeEntry(Player* player, uint8 /*slot*/, Item* i
 void Transmogrification::SetFakeEntry(Player* player, uint32 newEntry, uint8 /*slot*/, Item* itemTransmogrified)
 {
     ObjectGuid itemGUID = itemTransmogrified->GetGUID();
-    entryMap[player->GetGUID()][itemGUID] = newEntry;
-    dataMap[itemGUID] = player->GetGUID();
+    {
+        std::unique_lock lock(_cacheLock);
+        entryMap[player->GetGUID()][itemGUID] = newEntry;
+        dataMap[itemGUID] = player->GetGUID();
+    }
     CharacterDatabase.Execute("REPLACE INTO custom_transmogrification (GUID, FakeEntry, Owner) VALUES ({}, {}, {})", itemGUID.GetCounter(), newEntry, player->GetGUID().GetCounter());
     UpdateItem(player, itemTransmogrified);
 }
 
 bool Transmogrification::AddCollectedAppearance(uint32 accountId, uint32 itemId)
 {
-    if (!collectionCache.contains(accountId))
-    {
-        collectionCache.insert({ accountId, {itemId} });
-        return true;
-    }
+    std::unique_lock lock(_cacheLock);
+    return collectionCache[accountId].insert(itemId).second;
+}
 
-    auto res = collectionCache[accountId].insert(itemId);
-    bool inserted = res.second;
-    return inserted;
+bool Transmogrification::HasCollectedAppearance(uint32 accountId, uint32 itemId) const
+{
+    std::shared_lock lock(_cacheLock);
+    auto itr = collectionCache.find(accountId);
+    return itr != collectionCache.end() && itr->second.contains(itemId);
+}
+
+std::vector<uint32> Transmogrification::GetCollectedAppearances(uint32 accountId) const
+{
+    std::shared_lock lock(_cacheLock);
+    auto itr = collectionCache.find(accountId);
+    if (itr == collectionCache.end())
+        return {};
+    return { itr->second.begin(), itr->second.end() };
+}
+
+void Transmogrification::LoadPlayerTransmogs(ObjectGuid playerGuid, std::vector<std::pair<ObjectGuid, uint32>> const& fakes)
+{
+    std::unique_lock lock(_cacheLock);
+    entryMap.erase(playerGuid);
+    for (auto const& [itemGuid, fakeEntry] : fakes)
+    {
+        dataMap[itemGuid] = playerGuid;
+        entryMap[playerGuid][itemGuid] = fakeEntry;
+    }
+}
+
+void Transmogrification::UnloadPlayerTransmogs(ObjectGuid playerGuid)
+{
+    std::unique_lock lock(_cacheLock);
+    if (auto itr = entryMap.find(playerGuid); itr != entryMap.end())
+    {
+        for (auto const& [itemGuid, fakeEntry] : itr->second)
+            dataMap.erase(itemGuid);
+        entryMap.erase(itr);
+    }
+    selectionCache.erase(playerGuid);
+}
+
+void Transmogrification::SetSelectedSlot(ObjectGuid playerGuid, uint8 slot)
+{
+    std::unique_lock lock(_cacheLock);
+    selectionCache[playerGuid] = slot;
+}
+
+uint8 Transmogrification::GetSelectedSlot(ObjectGuid playerGuid) const
+{
+    std::shared_lock lock(_cacheLock);
+    auto itr = selectionCache.find(playerGuid);
+    return itr == selectionCache.end() ? 0 : itr->second;
 }
 
 void Transmogrification::AddToDatabase(Player* player, ItemTemplate const* itemTemplate)
@@ -1235,11 +1284,14 @@ void Transmogrification::DeleteFakeFromDB(ObjectGuid::LowType itemLowGuid, Chara
 {
     ObjectGuid itemGUID = ObjectGuid::Create<HighGuid::Item>(itemLowGuid);
 
-    if (dataMap.find(itemGUID) != dataMap.end())
     {
-        if (entryMap.find(dataMap[itemGUID]) != entryMap.end())
-            entryMap[dataMap[itemGUID]].erase(itemGUID);
-        dataMap.erase(itemGUID);
+        std::unique_lock lock(_cacheLock);
+        if (auto itr = dataMap.find(itemGUID); itr != dataMap.end())
+        {
+            if (auto owner = entryMap.find(itr->second); owner != entryMap.end())
+                owner->second.erase(itemGUID);
+            dataMap.erase(itr);
+        }
     }
     if (trans)
         (*trans)->Append("DELETE FROM custom_transmogrification WHERE GUID = {}", itemLowGuid);

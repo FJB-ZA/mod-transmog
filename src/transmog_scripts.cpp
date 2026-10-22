@@ -82,10 +82,7 @@ std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSear
     if (sT->GetUseCollectionSystem())
     {
         uint32 accountId = player->GetSession()->GetAccountId();
-        if (sT->collectionCache.find(accountId) == sT->collectionCache.end())
-            return allowedItems;
-
-        for (uint32 itemId : sT->collectionCache[accountId])
+        for (uint32 itemId : sT->GetCollectedAppearances(accountId))
         {
             if (!sObjectMgr->GetItemTemplate(itemId))
                 continue;
@@ -125,7 +122,7 @@ std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSear
 
 void PerformTransmogrification (Player* player, uint32 itemEntry, uint32 cost)
 {
-    uint8 slot = sT->selectionCache[player->GetGUID()];
+    uint8 slot = sT->GetSelectedSlot(player->GetGUID());
     WorldSession* session = player->GetSession();
     if (!player->HasEnoughMoney(cost))
     {
@@ -153,7 +150,7 @@ void PerformTransmogrification (Player* player, uint32 itemEntry, uint32 cost)
 
 void RemoveTransmogrification (Player* player)
 {
-    uint8 slot = sT->selectionCache[player->GetGUID()];
+    uint8 slot = sT->GetSelectedSlot(player->GetGUID());
     WorldSession* session = player->GetSession();
     if (Item* newItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
     {
@@ -240,7 +237,7 @@ public:
         {
             case EQUIPMENT_SLOT_END: // Show items you can use
             {
-                sT->selectionCache[player->GetGUID()] = action;
+                sT->SetSelectedSlot(player->GetGUID(), action);
 
                 bool useVendorInterface = player->GetPlayerSetting("mod-transmog", SETTING_VENDOR_INTERFACE).IsEnabled();
 
@@ -870,7 +867,7 @@ public:
             CheckRetroActiveQuestAppearances(player);
 
         ObjectGuid playerGUID = player->GetGUID();
-        sT->entryMap.erase(playerGUID);
+        std::vector<std::pair<ObjectGuid, uint32>> fakes;
         QueryResult result = CharacterDatabase.Query("SELECT GUID, FakeEntry FROM custom_transmogrification WHERE Owner = {}", player->GetGUID().GetCounter());
         if (result)
         {
@@ -879,12 +876,12 @@ public:
                 ObjectGuid itemGUID = ObjectGuid::Create<HighGuid::Item>((*result)[0].Get<uint32>());
                 uint32 fakeEntry = (*result)[1].Get<uint32>();
                 if (fakeEntry == HIDDEN_ITEM_ID || sObjectMgr->GetItemTemplate(fakeEntry))
-                {
-                    sT->dataMap[itemGUID] = playerGUID;
-                    sT->entryMap[playerGUID][itemGUID] = fakeEntry;
-                }
+                    fakes.emplace_back(itemGUID, fakeEntry);
             } while (result->NextRow());
-
+        }
+        sT->LoadPlayerTransmogs(playerGUID, fakes);
+        if (result)
+        {
             for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
             {
                 if (Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
@@ -901,10 +898,7 @@ public:
     void OnPlayerLogout(Player* player) override
     {
         ObjectGuid pGUID = player->GetGUID();
-        for (Transmogrification::transmog2Data::const_iterator it = sT->entryMap[pGUID].begin(); it != sT->entryMap[pGUID].end(); ++it)
-            sT->dataMap.erase(it->first);
-        sT->entryMap.erase(pGUID);
-        sT->selectionCache.erase(pGUID);
+        sT->UnloadPlayerTransmogs(pGUID);
 
 #ifdef PRESETS
         if (sT->GetEnableSets())
@@ -921,7 +915,7 @@ public:
         if (!sT->IsTransmogVendor(vendor->GetEntry()))
             return;
 
-        uint8 slot = sT->selectionCache[player->GetGUID()];
+        uint8 slot = sT->GetSelectedSlot(player->GetGUID());
 
         if (itemEntry == CUSTOM_HIDE_ITEM_VENDOR_ID || itemEntry == FALLBACK_HIDE_ITEM_VENDOR_ID)
         {

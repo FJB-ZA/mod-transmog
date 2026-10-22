@@ -12,8 +12,10 @@
 #include "ItemTemplate.h"
 #include "QuestDef.h"
 #include "ItemTemplate.h"
+#include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #define PRESETS // comment this line to disable preset feature totally
@@ -194,12 +196,8 @@ public:
     typedef std::unordered_map<uint32, std::string> searchStringMap;
     typedef std::unordered_map<uint32, std::vector<uint32>> transmogPlusData;
     typedef std::unordered_map<ObjectGuid, uint8> selectedSlotMap;
-    
+
     transmogPlusData plusDataMap;
-    transmogMap entryMap; // entryMap[pGUID][iGUID] = entry
-    transmogData dataMap; // dataMap[iGUID] = pGUID
-    collectionCacheMap collectionCache;
-    selectedSlotMap selectionCache;
 
 #ifdef PRESETS
     bool EnableSetInfo;
@@ -304,6 +302,12 @@ public:
     void DeleteFakeEntry(Player* player, uint8 slot, Item* itemTransmogrified, CharacterDatabaseTransaction* trans = nullptr);
     void SetFakeEntry(Player* player, uint32 newEntry, uint8 slot, Item* itemTransmogrified);
     bool AddCollectedAppearance(uint32 accountId, uint32 itemId);
+    [[nodiscard]] bool HasCollectedAppearance(uint32 accountId, uint32 itemId) const;
+    [[nodiscard]] std::vector<uint32> GetCollectedAppearances(uint32 accountId) const;
+    void LoadPlayerTransmogs(ObjectGuid playerGuid, std::vector<std::pair<ObjectGuid, uint32>> const& fakes);
+    void UnloadPlayerTransmogs(ObjectGuid playerGuid);
+    void SetSelectedSlot(ObjectGuid playerGuid, uint8 slot);
+    [[nodiscard]] uint8 GetSelectedSlot(ObjectGuid playerGuid) const;
     // Adds the item's appearance to the player's account collection and, if newly unlocked,
     // notifies the player (LANG_TRANSMOG_ADDED_APPEARANCE). Shared by the auto-collect player
     // script and the `.transmog claim` command.
@@ -367,6 +371,14 @@ public:
     uint32 PetSpellId;
     uint32 PetEntry;
     [[nodiscard]] bool IsTransmogVendor(uint32 entry) const { return entry == TMOG_VENDOR_CREATURE_ID || entry == PetEntry; };
+
+private:
+    // Item hooks run on every map update thread, so these caches are only touched under _cacheLock.
+    mutable std::shared_mutex _cacheLock;
+    transmogMap entryMap; // entryMap[pGUID][iGUID] = entry
+    transmogData dataMap; // dataMap[iGUID] = pGUID
+    collectionCacheMap collectionCache;
+    selectedSlotMap selectionCache;
 };
 #define sTransmogrification Transmogrification::instance()
 
