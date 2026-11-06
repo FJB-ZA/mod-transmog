@@ -719,11 +719,12 @@ private:
             if (!sT->GetTrackUnusableItems() && !sT->SuitableForTransmogrification(player, itemTemplate))
                 return;
 
-            uint32 accountId = player->GetSession()->GetAccountId();
-            auto accountIt = sT->collectionCache.find(accountId);
+            // Bot sessions only collect looks of Transmogrification.BotMinQuality: don't bind the rest
+            if (!sT->AllowsForSession(player->GetSession(), itemTemplate))
+                return;
 
-            // Do not bind an item if its appearance is already collected.
-            if (accountIt != sT->collectionCache.end() && accountIt->second.contains(itemTemplate->ItemId))
+            // Do not bind an item if its appearance is already collected (the cache is read under its lock).
+            if (sT->HasCollectedAppearance(player->GetSession()->GetAccountId(), itemTemplate->ItemId))
                 return;
 
             // Claim the appearance by binding the physical item.
